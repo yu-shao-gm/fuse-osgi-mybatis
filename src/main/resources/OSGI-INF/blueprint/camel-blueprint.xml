@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    JBoss, Home of Professional Open Source
+    Copyright 2014, Red Hat, Inc. and/or its affiliates, and individual
+    contributors by the @authors tag. See the copyright.txt in the
+    distribution for a full listing of individual contributors.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+-->
+<!--
+   This is the OSGi Blueprint XML file defining the Camel context and routes.  
+
+   Because the file is in the OSGI-INF/blueprint directory inside our JAR, it 
+   will be automatically activated as soon as the bundle is installed.
+
+   The root element for any OSGi Blueprint file is 'blueprint' - you also see 
+   the namespace definitions for both the Blueprint and the Camel namespaces.
+-->
+<blueprint xmlns="http://www.osgi.org/xmlns/blueprint/v1.0.0"
+    xmlns:cm="http://aries.apache.org/blueprint/xmlns/blueprint-cm/v1.0.0"
+    xmlns:ext="http://aries.apache.org/blueprint/xmlns/blueprint-ext/v1.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.osgi.org/xmlns/blueprint/v1.0.0 https://www.osgi.org/xmlns/blueprint/v1.0.0/blueprint.xsd">
+    <type-converters>
+        <bean class="com.redhat.cee.ldappoller.PathToResourceConverter"/>
+    </type-converters>
+    <reference id="httpService" interface="org.osgi.service.http.HttpService"/>
+    <bean
+        class="org.apache.camel.component.servlet.osgi.OsgiServletRegisterer"
+        destroy-method="unregister" id="ldapPollerReg" init-method="register">
+        <property name="alias" value="/ldap"/>
+        <property name="httpService" ref="httpService"/>
+        <property name="servlet" ref="camelServlet"/>
+    </bean>
+    <bean
+        class="org.apache.camel.component.servlet.CamelHttpTransportServlet" id="camelServlet"/>
+    <cm:property-placeholder id="camel.activemq.blueprint" persistent-id="camel.activemq.blueprint">
+        <cm:default-properties>
+            <cm:property name="appDBHost" value="localhost"/>
+            <cm:property name="appDBPort" value="3306"/>
+            <cm:property name="appDBName" value="testdb"/>
+            <cm:property name="appDBUseSSL" value="false"/>
+            <cm:property name="certificatePath" value=""/>
+            <cm:property name="appDBUser" value="root"/>
+            <cm:property name="appDBPassword" value="admin"/>
+            <cm:property name="appMessageBrokerUrl" value="vm://amq?broker.persistent=false"/>
+            <cm:property name="appMessageBrokerUsername" value="admin"/>
+            <cm:property name="appMessageBrokerPassword" value="admin"/>
+        </cm:default-properties>
+    </cm:property-placeholder>
+    <!-- 
+    <ext:property-placeholder ignore-missing-locations="true">
+        <ext:location>file:///etc/hydra/config/app.properties</ext:location>
+    </ext:property-placeholder>
+     -->
+    <bean class="org.apache.activemq.camel.component.ActiveMQComponent"
+        depends-on="pooledConnectionFactory" id="activemq">
+        <property name="connectionFactory" ref="pooledConnectionFactory"/>
+        <property name="transacted" value="true"/>
+        <property name="deliveryPersistent" value="true"/>
+        <property name="acknowledgementModeName" value="SESSION_TRANSACTED"/>
+        <property name="cacheLevelName" value="CACHE_CONSUMER"/>
+    </bean>
+    <bean class="org.apache.activemq.pool.PooledConnectionFactory"
+        destroy-method="stop" id="pooledConnectionFactory" init-method="start">
+        <property name="maxConnections" value="8"/>
+        <property name="connectionFactory">
+            <bean class="org.apache.activemq.ActiveMQSslConnectionFactory">
+                <property name="trustStore" value="${certificatePath}/truststore.jks"/>
+                <property name="trustStorePassword" value="redhat"/>
+                <property name="keyStore" value="${certificatePath}/HydraBroker.jks"/>
+                <property name="keyStorePassword" value="redhat"/>
+                <property name="brokerURL" value="${appMessageBrokerUrl}"/>
+                <property name="userName" value="${appMessageBrokerUsername}"/>
+                <property name="password" value="${appMessageBrokerPassword}"/>
+            </bean>
+        </property>
+    </bean>
+    <bean class="org.apache.commons.dbcp.BasicDataSource"
+        destroy-method="close" id="DataSource">
+        <property name="driverClassName" value="com.mysql.jdbc.Driver"/>
+        <property name="url" value="jdbc:mysql://${appDBHost}:${appDBPort}/${appDBName}?relaxAutoCommit=true&amp;useSSL=${appDBUseSSL}&amp;trustCertificateKeyStoreUrl=file://${certificatePath}/truststore.jks&amp;trustCertificateKeyStorePassword=redhat"/>
+        <property name="username" value="${appDBUser}"/>
+        <property name="password" value="${appDBPassword}"/>
+        <property name="poolPreparedStatements" value="true"/>
+        <property name="maxOpenPreparedStatements" value="20"/>
+        <property name="maxActive" value="250"/>
+        <property name="maxIdle" value="10"/>
+        <property name="minIdle" value="5"/>
+        <property name="testOnBorrow" value="true"/>
+        <property name="validationQuery" value="select 1"/>
+    </bean>
+    <bean
+        class="org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy" id="txDataSource">
+        <argument ref="DataSource"/>
+    </bean>
+    <bean
+        class="org.springframework.jdbc.datasource.DataSourceTransactionManager" id="txManager">
+        <property name="dataSource" ref="txDataSource"/>
+    </bean>
+    <bean class="org.mybatis.spring.SqlSessionFactoryBean" id="sqlSessionFactoryBean">
+        <property name="dataSource" ref="txDataSource"/>
+        <!-- standard mybatis config file -->
+        <property name="configLocation" value="META-INF/SqlMapConfig.xml"/>
+        <!-- externalised mappers -->
+        <property name="mapperLocations">
+            <array value-type="org.springframework.core.io.Resource">
+                <value>META-INF/mapper/com/redhat/cee/ldappoller/LdapEntryMapper.xml</value>
+            </array>
+        </property>
+    </bean>
+    <bean class="org.apache.ibatis.session.SqlSessionFactory"
+        factory-method="getObject" factory-ref="sqlSessionFactoryBean" id="sqlSessionFactory"/>
+    <bean class="org.apache.camel.component.mybatis.MyBatisComponent" id="mybatis">
+        <property name="sqlSessionFactory" ref="sqlSessionFactory"/>
+    </bean>
+    <bean class="com.redhat.cee.ldappoller.LdapEntryDao" id="ldapEntryDao">
+        <property name="sqlSessionFactory" ref="sqlSessionFactory"/>
+    </bean>
+    <bean class="org.mybatis.spring.mapper.MapperScannerConfigurer" id="bean-269888b9-45f8-4e73-bda4-ec7ff0d0d90a">
+        <property name="basePackage" value="com.redhat.cee.ldappoller"/>
+    </bean>
+    <!-- to setup camel servlet with OSGi HttpService -->
+    <bean class="com.redhat.cee.ldappoller.LdapPoller"
+        destroy-method="destroy" id="ldapPoller" init-method="create">
+        <property name="dataSource" ref="DataSource"/>
+        <property name="ldapEntryDao" ref="ldapEntryDao"/>
+    </bean>
+    <!-- 
+         Lets connect the Camel ActiveMQ component to the broker.
+    -->
+    <camelContext id="ldappoller-amq-context" xmlns="http://camel.apache.org/schema/blueprint">
+        <restConfiguration bindingMode="json" component="servlet"
+            contextPath="/ldap" port="8181">
+            <dataFormatProperty key="prettyPrint" value="true"/>
+        </restConfiguration>
+        <rest consumes="application/json" path="/ldap" produces="application/json">
+            <description>Ldap rest service</description>
+            <get uri="">
+                <description>Find all ldap</description>
+                <to uri="direct:ldap-by-date"/>
+            </get>
+        </rest>
+        <route id="ldap poller">
+            <from id="timerToStartPollerr" uri="timer:poller?period=60s"/>
+            <log id="ldap poller" message="LDAP POLLING starting"/>
+            <bean id="startLdapPoller" method="ldapPoller" ref="ldapPoller"/>
+        </route>
+        <route id="ldapRestRoute">
+            <from id="_from1" uri="direct:ldap-by-date"/>
+            <transform id="_transform1">
+                <constant>{"msg": "Ldap Record by Date"}</constant>
+            </transform>
+        </route>
+    </camelContext>
+</blueprint>
